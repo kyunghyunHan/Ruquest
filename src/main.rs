@@ -168,60 +168,97 @@ impl ApiTester {
     }
     fn render_requests_panel(&mut self, ui: &mut Ui) {
         ui.heading("API Groups");
-    
+
         if ui.button("New Group").clicked() {
             self.new_group_dialog.show = true;
         }
-    
+
         ScrollArea::vertical().show(ui, |ui| {
             let mut group_to_delete = None;
-            let mut request_action = None;  // (group_idx, req_idx, action)
-            
+            let mut request_action = None;
+
             for (group_idx, group) in self.groups.iter_mut().enumerate() {
                 // 그룹 헤더
                 ui.horizontal(|ui| {
-                    if ui.button(if group.is_expanded { "▼" } else { "▶" }).clicked() {
+                    if ui
+                        .button(if group.is_expanded { "▼" } else { "▶" })
+                        .clicked()
+                    {
                         group.is_expanded = !group.is_expanded;
                     }
                     ui.label(&group.name);
-                    if ui.button("❌").clicked() {
-                        group_to_delete = Some(group_idx);
+
+                    // 우측에 Ellipsis Button 추가
+                    //     if ui.button("...").clicked() {
+                    //         ui.menu_button("Options", |ui| { // 옵션 메뉴
+                    //             if ui.button("Add API").clicked() {
+                    //                 request_action = Some((group_idx, 0, RequestAction::Add));
+                    //             }
+                    //             if ui.button("Delete Group").clicked() {
+                    //                 group_to_delete = Some(group_idx);
+                    //             }
+                    //         });
+                    //     }
+                    // });
+                    let popup_id = ui.make_persistent_id(format!("group_menu_{}", group_idx));
+                    let button_response = ui.button("...");
+                    if button_response.clicked() {
+                        ui.memory_mut(|mem| mem.toggle_popup(popup_id));
                     }
+
+                    egui::popup::popup_below_widget(
+                        ui,
+                        popup_id,
+                        &button_response,
+                        egui::PopupCloseBehavior::CloseOnClick,
+                        |ui: &mut Ui| {
+                            ui.set_max_width(100.0);
+
+                            ui.set_max_height(100.0);
+                            if ui.button("Add API").clicked() {
+                                request_action = Some((group_idx, 0, RequestAction::Add));
+                            }
+                            if ui.button("Delete Group").clicked() {
+                                group_to_delete = Some(group_idx);
+                            }
+                        },
+                    );
                 });
-    
                 // 그룹이 확장되어 있을 때 내용 표시
                 if group.is_expanded {
                     ui.indent("requests", |ui| {
-                        // 새 API 요청 추가 버튼
-                        if ui.button("+Add API").clicked() {
-                            request_action = Some((group_idx, 0, RequestAction::Add));
-                        }
-    
-                        // API 요청 목록
                         for (req_idx, request) in group.requests.iter().enumerate() {
                             ui.horizontal(|ui| {
-                                if ui.button(&format!("{} - {}", request.name, request.method)).clicked() {
-                                    request_action = Some((group_idx, req_idx, RequestAction::Select(request.clone())));
+                                if ui
+                                    .button(&format!("{} - {}", request.name, request.method))
+                                    .clicked()
+                                {
+                                    request_action = Some((
+                                        group_idx,
+                                        req_idx,
+                                        RequestAction::Select(request.clone()),
+                                    ));
                                 }
                                 if ui.button("❌").clicked() {
-                                    request_action = Some((group_idx, req_idx, RequestAction::Delete));
+                                    request_action =
+                                        Some((group_idx, req_idx, RequestAction::Delete));
                                 }
                             });
                         }
                     });
                 }
             }
-    
+
             // 액션 처리
             match request_action {
-                Some((group_idx, req_idx, RequestAction::Add)) => {
+                Some((group_idx, _, RequestAction::Add)) => {
                     self.new_request_dialog.show = true;
                     self.new_request_dialog.group_index = Some(group_idx);
                     self.current_request = ApiRequest::default();
                 }
                 Some((group_idx, req_idx, RequestAction::Select(request))) => {
                     self.current_request = request;
-                    self.new_request_dialog.group_index = Some(group_idx);  // 이 부분이 추가됨
+                    self.new_request_dialog.group_index = Some(group_idx);
                 }
                 Some((group_idx, req_idx, RequestAction::Delete)) => {
                     if let Some(group) = self.groups.get_mut(group_idx) {
@@ -231,7 +268,7 @@ impl ApiTester {
                 }
                 None => {}
             }
-    
+
             if let Some(idx) = group_to_delete {
                 self.groups.remove(idx);
                 self.save_groups();
@@ -252,10 +289,12 @@ impl ApiTester {
                         );
                     }
                 });
-    
+
             ui.label("URL:");
-            let url_changed = ui.text_edit_singleline(&mut self.current_request.url).changed();
-    
+            let url_changed = ui
+                .text_edit_singleline(&mut self.current_request.url)
+                .changed();
+
             // Command+S나 Ctrl+S로 저장
             if ui.input(|i| i.modifiers.command && i.key_pressed(egui::Key::S)) {
                 if let Some(group_idx) = self.new_request_dialog.group_index {
@@ -271,7 +310,7 @@ impl ApiTester {
                     }
                 }
             }
-    
+
             // URL이 변경되었을 때도 저장
             if url_changed {
                 if let Some(group_idx) = self.new_request_dialog.group_index {
@@ -287,22 +326,22 @@ impl ApiTester {
                     }
                 }
             }
-    
+
             if ui.button("Send").clicked() && !self.is_loading {
                 self.send_request();
             }
         });
-    
+
         ui.collapsing("Headers", |ui| {
             self.render_headers(ui);
         });
-    
+
         if self.current_request.method != "GET" {
             ui.collapsing("Body", |ui| {
                 ui.text_edit_multiline(&mut self.current_request.body);
             });
         }
-    
+
         if let Some(response) = &self.current_request.response {
             self.render_response(ui, response);
         }
@@ -426,7 +465,8 @@ impl ApiTester {
                         ui.text_edit_singleline(&mut self.new_request_dialog.name);
                     });
                     ui.horizontal(|ui| {
-                        if ui.button("Create").clicked() && !self.new_request_dialog.name.is_empty() {
+                        if ui.button("Create").clicked() && !self.new_request_dialog.name.is_empty()
+                        {
                             if let Some(group_idx) = self.new_request_dialog.group_index {
                                 let mut new_request = self.current_request.clone();
                                 new_request.name = self.new_request_dialog.name.clone();
@@ -463,7 +503,9 @@ impl eframe::App for ApiTester {
 
         egui::SidePanel::left("requests_panel")
             .resizable(true)
-            .default_width(200.0)
+            .default_width(400.0)
+            .min_width(300.0)
+            .max_width(500.0) // 최대 크기 설정
             .show(ctx, |ui| {
                 self.render_requests_panel(ui);
             });
