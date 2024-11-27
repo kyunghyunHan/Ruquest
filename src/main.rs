@@ -4,14 +4,14 @@ use reqwest::{
     header::{HeaderMap, HeaderName},
     Client, Method,
 };
+use rfd::FileDialog;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fs;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::time::Duration;
-use tokio::runtime::Runtime;
-
-// Request 액션을 위한 enum 추가
+use tokio::runtime::Runtime; // 파일 다이얼로그를 위한 크레이트 추가
+                             // Request 액션을 위한 enum 추가
 #[derive(Clone)]
 enum RequestAction {
     Add,
@@ -68,6 +68,8 @@ struct ApiTester {
     runtime: Runtime,
     new_request_dialog: NewRequestDialog,
     new_group_dialog: NewGroupDialog,
+    import_error: Option<String>, // 추가된 필드
+
 }
 impl Default for ApiTester {
     fn default() -> Self {
@@ -88,11 +90,42 @@ impl Default for ApiTester {
             runtime: Runtime::new().expect("Failed to create Tokio runtime"),
             new_request_dialog: NewRequestDialog::default(),
             new_group_dialog: NewGroupDialog::default(),
+            import_error: None,
         }
     }
 }
 
 impl ApiTester {
+    fn import_group(&mut self, file_path: &str) -> Result<(), String> {
+        let content =
+            fs::read_to_string(file_path).map_err(|e| format!("Failed to read file: {}", e))?;
+
+        let imported_group: RequestGroup =
+            serde_json::from_str(&content).map_err(|e| format!("Failed to parse JSON: {}", e))?;
+
+        // 중복 검사
+        if self.groups.iter().any(|g| g.name == imported_group.name) {
+            return Err(format!("Group '{}' already exists", imported_group.name));
+        }
+
+        self.groups.push(imported_group);
+        self.save_groups();
+        Ok(())
+    }
+
+    fn export_group(&self, group_idx: usize, file_path: &str) -> Result<(), String> {
+        if let Some(group) = self.groups.get(group_idx) {
+            let json = serde_json::to_string_pretty(group)
+                .map_err(|e| format!("Failed to serialize group: {}", e))?;
+
+            fs::write(file_path, json).map_err(|e| format!("Failed to write file: {}", e))?;
+
+            Ok(())
+        } else {
+            Err("Group not found".to_string())
+        }
+    }
+
     fn load_groups() -> Vec<RequestGroup> {
         if let Ok(data) = fs::read_to_string("saved_groups.json") {
             println!("Loading groups from file");
@@ -169,16 +202,32 @@ impl ApiTester {
     fn render_requests_panel(&mut self, ui: &mut Ui) {
         ui.heading("API Groups");
 
-        if ui.button("New Group").clicked() {
-            self.new_group_dialog.show = true;
+        // 상단의 버튼들을 수평으로 배치
+        ui.horizontal(|ui| {
+            if ui.button("New Group").clicked() {
+                self.new_group_dialog.show = true;
+            }
+            if ui.button("Import Group").clicked() {
+                if let Some(path) = FileDialog::new().add_filter("JSON", &["json"]).pick_file() {
+                    match self.import_group(path.to_str().unwrap()) {
+                        Ok(_) => self.import_error = None,
+                        Err(e) => self.import_error = Some(e),
+                    }
+                }
+            }
+        });
+
+        // 에러 메시지 표시
+        if let Some(error) = &self.import_error {
+            ui.label(RichText::new(error).color(Color32::RED));
         }
 
         ScrollArea::vertical().show(ui, |ui| {
             let mut group_to_delete = None;
             let mut request_action = None;
+            let mut export_group_idx = None;
 
             for (group_idx, group) in self.groups.iter_mut().enumerate() {
-                // 그룹 헤더
                 ui.horizontal(|ui| {
                     if ui
                         .button(if group.is_expanded { "▼" } else { "▶" })
@@ -188,18 +237,6 @@ impl ApiTester {
                     }
                     ui.label(&group.name);
 
-                    // 우측에 Ellipsis Button 추가
-                    //     if ui.button("...").clicked() {
-                    //         ui.menu_button("Options", |ui| { // 옵션 메뉴
-                    //             if ui.button("Add API").clicked() {
-                    //                 request_action = Some((group_idx, 0, RequestAction::Add));
-                    //             }
-                    //             if ui.button("Delete Group").clicked() {
-                    //                 group_to_delete = Some(group_idx);
-                    //             }
-                    //         });
-                    //     }
-                    // });
                     let popup_id = ui.make_persistent_id(format!("group_menu_{}", group_idx));
                     let button_response = ui.button("...");
                     if button_response.clicked() {
@@ -211,12 +248,15 @@ impl ApiTester {
                         popup_id,
                         &button_response,
                         egui::PopupCloseBehavior::CloseOnClick,
-                        |ui: &mut Ui| {
+                        |ui| {
                             ui.set_max_width(100.0);
+                            ui.set_max_height(200.0);
 
-                            ui.set_max_height(100.0);
                             if ui.button("Add API").clicked() {
                                 request_action = Some((group_idx, 0, RequestAction::Add));
+                            }
+                            if ui.button("Export Group").clicked() {
+                                export_group_idx = Some(group_idx);
                             }
                             if ui.button("Delete Group").clicked() {
                                 group_to_delete = Some(group_idx);
@@ -224,6 +264,7 @@ impl ApiTester {
                         },
                     );
                 });
+
                 // 그룹이 확장되어 있을 때 내용 표시
                 if group.is_expanded {
                     ui.indent("requests", |ui| {
@@ -246,6 +287,19 @@ impl ApiTester {
                             });
                         }
                     });
+                }
+            }
+
+            // Export 처리
+            if let Some(group_idx) = export_group_idx {
+                if let Some(path) = FileDialog::new()
+                    .add_filter("JSON", &["json"])
+                    .set_file_name(&format!("{}.json", self.groups[group_idx].name))
+                    .save_file()
+                {
+                    if let Err(e) = self.export_group(group_idx, path.to_str().unwrap()) {
+                        self.import_error = Some(e);
+                    }
                 }
             }
 
